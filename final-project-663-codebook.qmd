@@ -1,0 +1,1146 @@
+---
+title: "STA 663: Final Project"
+author: "Hugh Ford"
+date: "2025-05-07"
+format: pdf
+execute: 
+  echo: true
+  message: false
+  warning: false
+bibliography: references.bib
+abstract: This project aims to predict seasonal flu vaccine uptake using data from the National 2009 H1N1 Flu Survey (NHFS). Although seasonal flu vaccines are widely available in the U.S., not everyone chooses to get vaccinated. We first apply several imputation methods to handle missing data, ultimately opting for a complete case analysis. Next, we use logistic regression, classification trees, and random forest models to predict vaccination status based on 35 individual characteristics. Our comparison of these techniques indicates that the random forest consistently outperforms the others across key metrics. Feature importance analysis highlights perceived risk and belief in the vaccine's effectiveness as significant predictors of vaccination status. Based on these findings, we recommend that public health campaigns focus on these factors to improve seasonal flu vaccination uptake.
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+\newpage
+
+\tableofcontents
+\listoffigures
+\listoftables
+\newpage
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+# Section I: Introduction
+
+This project aims to predict whether individuals received the seasonal flu vaccine using data from the National 2009 H1N1 Flu Survey (NHFS). The NHFS was conducted by the National Center for Immunization and Respiratory Diseases (NCIRD), the National Center for Health Statistics (NCHS), and the Centers for Disease Control and Prevention (CDC). It was a one-time survey "designed specifically to monitor vaccination during the 2009-2010 flu season in response to the 2009 H1N1 pandemic." [@d20] The dataset was made available through DrivenData's "Flu Shot Learning: Predict H1N1 and Seasonal Flu Vaccines" competition. [@d20]
+
+We carry out a binary classification task to predict whether an individual received the seasonal flu vaccine or not. The NFHS dataset used in our analysis contains 26,707 observations across 37 variables, including participant ID, a binary indicator for seasonal flu vaccination, and 35 predictive features. These features describe the sampled individuals' health, behaviors, and opinions--for example, whether an individual has a chronic health condition, whether they frequently wash their hands, and their level of trust in vaccine safety. The dataset also includes demographic variables such as gender, race, age group, and employment status. Although the dataset originally included an outcome variable for H1N1 vaccination, we decided to exclude it from our analysis to focus exclusively on seasonal flu prediction.
+
+We begin by cleaning the data and conducting an exploratory data analysis (EDA). We then implement and evaluate two prediction approaches: logistic regression and tree-based methods. Finally, we compare the performance of the techniques, discuss limitations of our analysis, and provide recommendations for future inquiry.
+
+```{r, warning = FALSE, message = FALSE}
+# Load necessary libraries
+library(tidyverse)
+library(visdat)
+library(naniar)
+library(VIM)
+library(glmnet)
+library(StatMatch)
+library(rpart)
+library(randomForest)
+library(missForest)
+library(mice)
+library(caret)
+library(gtsummary)
+library(gt)
+library(labelled)
+library(class)
+library(rattle)
+library(rpart.plot)
+library(kableExtra)
+```
+
+
+```{r}
+# Read-in csv files for data
+
+# define variable for path to features csv file
+path_features <- "~/Desktop/Wake Forest/Semester 2/STA 663 Statistical Learning/Final Project/training_set_features.csv"
+
+# read in csv file for features data
+features_data <- read.csv(path_features)
+
+# repeat steps for outcomes data
+path_outcomes <- "~/Desktop/Wake Forest/Semester 2/STA 663 Statistical Learning/Final Project/training_set_labels.csv"
+
+outcomes_data <- read.csv(path_outcomes)
+```
+
+
+# Section II: Data Cleaning and EDA
+
+## II.A: Data Cleaning
+
+```{r}
+# Combine features and outcomes into one dataframe
+# exclude second column (whether or not respondent received H1N1 vax)
+flu_full <- full_join(outcomes_data, 
+                      features_data,
+                      by = "respondent_id")[-2]
+```
+
+We begin by preparing the dataset for the prediction task. The data are provided in two separate CSV files, which we merge by matching participant IDs. As noted in the introduction, the dataset includes information on whether a participant received the H1N1 vaccine. We remove this variable, as our analysis focuses exclusively on predicting seasonal flu vaccination.
+
+```{r}
+# Convert missing data stored as blank character strings to NA
+flu_full[flu_full == ""] <- NA
+```
+
+```{r, fig.height=5, fig.cap="Missing Data by Feature (Pre-processing)"}
+#visualization pre-handling
+vis_miss(flu_full[3:37], warn_large_data = FALSE, sort_miss = TRUE) +
+  theme(axis.text.x =  element_text(angle = 90))
+```
+
+We then inspect the dataset for missingness. Overall, approximately 6.5\% of the data are missing. Of the 35 features, 22 have missingness greater than or equal to 1%, as shown in **Figure 1**. 
+
+A key complication regarding missingness arises in the variables related to employment-- specifically employment industry and occupation. As some participants are unemployed or not in the workforce, their industry and occupation data are missing due to their employment status, while for others, the data are missing for unknown reasons. We address this issue by distinguishing between these two types of missingness. We also hypothesize that the latter type may not be missing completely at random, and thus could be informative. Consequently, we retain these values in the dataset and designate them as "Unknown."
+
+```{r}
+# Distinguish missing values in employment industry/occupation
+# due to missingness vs. due to not being employed
+
+# loop over the the rows of the dataset
+
+for (i in 1:nrow(flu_full)) {
+  
+  # check the employment status of each observation
+  
+  if (flu_full[i, "employment_status"] %in% c("Unemployed",
+                                                   "Not in Labor Force")) {
+    
+      # if unemployed/not in labor force, set their industry and occupation to
+      # "Not employed"
+    
+    flu_full[i, "employment_industry"] <- "Not employed"
+    flu_full[i, "employment_occupation"] <- "Not employed"}
+  else{
+    
+    # otherwise data is actually missing
+    # set industry and/or occupation to "Unknown" as missingness
+    # may be informative in this case
+    
+    if (is.na(flu_full[i, "employment_industry"])){
+      flu_full[i, "employment_industry"] <- "Unknown"
+    }
+    if (is.na(flu_full[i, "employment_occupation"])){
+      flu_full[i, "employment_occupation"] <- "Unknown"
+    }
+  }
+}
+
+```
+
+We suspect that missingness may also be informative for several variables that relate to more sensitive topics. The most concerning is health insurance status, which has the highest proportion of missing data (46\%). We hypothesize that participants without insurance may have been reluctant to respond to this question on the survey. Similarly, participants may have hesitated to answer questions about whether their doctor recommended the seasonal flu shot or H1N1 vaccine, especially if they do not regularly see a doctor or did not follow their medical advice. These two variables each have about 8\% missing data. Lastly, some participants may have been unwilling to disclose whether they have a chronic health condition, although this variable had a lower rate of missingness (4\%). Given the potential informativeness of this missing data, we again chose to label these values as "Unknown" rather than exclude the variables from the dataset or attempt to impute values.
+
+```{r}
+# Create copy of data set to modify
+flu_full_unknown <- flu_full
+
+# Handle missing data for health_insurance as Unknown
+flu_full_unknown[,"health_insurance"] <- ifelse(
+                      is.na(flu_full[,"health_insurance"] ) == TRUE,
+                      "Unknown",
+                      flu_full[,"health_insurance"] )
+
+#Handle missing data for chronic conditions as unknown
+flu_full_unknown[,"chronic_med_condition"] <- ifelse(
+                      is.na(flu_full[,"chronic_med_condition"] ) == TRUE,
+                      "Unknown",
+                      flu_full[,"chronic_med_condition"])
+
+#Handle missing data for doctor_rec_h1n1 and doctor_recc_seasonal as unknown
+flu_full_unknown[,"doctor_recc_h1n1"] <- ifelse(
+                      is.na(flu_full[,"doctor_recc_h1n1"] ) == TRUE,
+                      "Unknown",
+                      flu_full[,"doctor_recc_h1n1"] )
+
+flu_full_unknown[,"doctor_recc_seasonal"] <- ifelse(
+                      is.na(flu_full[,"doctor_recc_seasonal"] ) == TRUE,
+                      "Unknown",
+                      flu_full[,"doctor_recc_seasonal"] )
+
+```
+
+```{r, fig.height=5, fig.cap="Missing Data by Feature - Iteration 2"}
+
+#visualization after informative missingness is handled
+vis_miss(flu_full_unknown[3:37], warn_large_data = FALSE, sort_miss = TRUE) +
+  theme(axis.text.x =  element_text(angle = 90))
+```
+
+After addressing this informative missing data, approximately 1.8\% of the data remains missing and unaccounted for. As shown in **Figure 2**, this missingness is primarily concentrated in economic features such as income level (17\% missing), home ownership status (8\%), employment status (5\%), and education level (5\%).
+
+We adopt two approaches to handling the remaining missingness. First, we repeat the process used earlier by assuming that the missing data in these four features is informative and labeling their missing values as "Unknown." Then, given the relatively low proportion of missingness in the other features, we assume the remaining data are missing completely at random and perform a complete case analysis--removing any observation with missing values. This dataset serves as our baseline for evaluating the effectiveness of data imputation techniques.
+
+For the second approach, we conduct Chi-squared tests of independence and find that the features with missingness are not independent of the other variables in the dataset at a 95\% confidence level. As a result, we can leverage data from the other features to predict the missing values. We consider four imputation techniques: classification trees, random forest, chained equations, and k-Nearest Neighbors (k-NN). We detail and evaluate each approach in the following sections.
+
+```{r}
+# Convert all variables except participant ID to factors
+    #(numerical variables are all discrete with <= 5 unique values)
+for(i in 2:ncol(flu_full)){
+  flu_full_unknown[,i] <-as.factor(flu_full_unknown[,i])
+}
+
+# Add ordering to ordered numerical variables (and age group)
+indices <- c(3, 4, 18:24, 34:35)
+
+for(i in indices){
+  flu_full_unknown[,i] <-ordered(flu_full_unknown[,i])
+}
+
+# Add ordering for education and income_poverty
+flu_full_unknown$education <- factor(flu_full_unknown$education, ordered = T,
+       levels = c("< 12 Years", "12 Years", "Some College","College Graduate"))
+
+flu_full_unknown$income_poverty <- factor(flu_full_unknown$income_poverty,
+                                          ordered = T,
+    levels = c("Below Poverty", "<= $75,000, Above Poverty", "> $75,000"))
+                                          
+
+```
+
+
+```{r}
+#Examples of Chi-Squared tests of independence for select variables
+
+# chisq.test(flu_full$income_poverty, flu_full$hhs_geo_region)
+# chisq.test(flu_full$income_poverty, flu_full$health_insurance)
+# 
+# chisq.test(flu_full$rent_or_own, flu_full$hhs_geo_region)
+# chisq.test(flu_full$rent_or_own, flu_full$health_insurance)
+# 
+# chisq.test(flu_full$employment_status, flu_full$hhs_geo_region)
+# chisq.test(flu_full$employment_status, flu_full$health_insurance)
+# 
+# chisq.test(flu_full$education, flu_full$hhs_geo_region)
+# chisq.test(flu_full$income_poverty, flu_full$health_insurance)
+
+```
+
+```{r}
+#create copy of dataframe with informative missingness
+flu_full_unknown_2 <- flu_full_unknown
+
+# Handle missing data for income_poverty as Unknown
+flu_full_unknown_2[,"income_poverty"] <- ifelse(
+                      is.na(flu_full[,"income_poverty"] ) == TRUE,
+                      "Unknown",
+                      flu_full[,"income_poverty"] )
+
+#Handle missing data for chronic conditions as unknown
+flu_full_unknown_2[,"rent_or_own"] <- ifelse(
+                      is.na(flu_full[,"rent_or_own"] ) == TRUE,
+                      "Unknown",
+                      flu_full[,"rent_or_own"])
+
+#Handle missing data for doctor_rec_h1n1 and doctor_recc_seasonal as unknown
+flu_full_unknown_2[,"employment_status"] <- ifelse(
+                      is.na(flu_full[,"employment_status"] ) == TRUE,
+                      "Unknown",
+                      flu_full[,"employment_status"] )
+
+flu_full_unknown_2[,"education"] <- ifelse(
+                      is.na(flu_full[,"education"] ) == TRUE,
+                      "Unknown",
+                      flu_full[,"education"] )
+
+
+# Re-add ordering for education and income_poverty
+# excluding unknown
+flu_full_unknown_2$education <- factor(flu_full_unknown_2$education, ordered = T,
+       levels = c("< 12 Years", "12 Years", "Some College","College Graduate"),
+       exclude = "Unknown")
+
+flu_full_unknown_2$income_poverty <- factor(flu_full_unknown_2$income_poverty,
+                                          ordered = T,
+    levels = c("Below Poverty", "<= $75,000, Above Poverty", "> $75,000"),
+    exclude = "Unknown")
+
+# omit remaining missing values for CCA
+flu_full_cca <- na.omit(flu_full_unknown_2)
+```
+
+
+```{r}
+# Write function to display performance metrics
+# for different imputation techniques
+confusion_imputation <- function(df){
+  
+  #use logistic regression to get predictions for each imputation
+  # (in-sample for easier evaluation)
+  logistic <- glm(seasonal_vaccine ~ ., data = df,
+                  family = "binomial")
+
+  # Find the predicted probability that y_i = yes
+  YHat <- predict(logistic, type = "response")
+  
+  # Convert to Yes / No outcomes
+  YHat <-ifelse(YHat > .5, "Yes", "No")
+  
+  #format as confusion matrix
+  confusion <- table("Prediction"= YHat, "Actual" = df[,"seasonal_vaccine"])
+  
+  #input in performance function
+  class_performance(confusion)
+}
+
+# write function to evaluate different performance metrics from
+# confusion matrix
+class_performance <- function(confusion_matrix){
+  
+  #compute TPR, FPR, TNR, FNR
+  TPR <- confusion_matrix[2,2]/sum(confusion_matrix[,2])
+  FPR <- confusion_matrix[1,2]/sum(confusion_matrix[,2])
+  
+  TNR <- confusion_matrix[1,1]/sum(confusion_matrix[,1])
+  FNR <- confusion_matrix[2,1]/sum(confusion_matrix[,1])
+  
+  # compute geometric mean of TPR and TNR
+  geometric_mean <- sqrt(TPR*TNR)
+  
+  #compute accuracy
+accuracy <- (confusion_matrix[1,1] + confusion_matrix[2,2])/sum(confusion_matrix)
+  
+  #compute CER
+  CER <- (confusion_matrix[1,2] + confusion_matrix[2,1])/sum(confusion_matrix)
+  
+  #compute F1 score
+  f1 <- (2*TPR)/((2*TPR) + FPR + FNR)
+  
+  # store metrics as dataframe
+  performance <- data.frame("Measure" = c("Accuracy", "CER",
+                                          "Sensitivity",
+                                          "Specificity",
+                                      "Geometric Mean of Sens. and Spec.",
+                                          "F1"),
+             "Result" = c(accuracy, CER, TPR, TNR, geometric_mean, f1))
+  
+  #return data frame
+  return(performance)
+}
+
+```
+
+### II.B.1: Classification Trees for Imputation
+
+#### Introduction
+
+The first imputation method we explore is classification trees. All of the features in the dataset are either categorical or discrete numeric with five or fewer unique values. We convert the discrete numeric features to ordered categorical features, allowing us to use classification-based techniques to impute missing values across all features. 
+
+#### Method
+
+Classification trees are a type of decision tree used to predict categorical outcomes. They work by partitioning the data into clusters based on the values of certain features and assigning the most common outcome within each cluster as the predicted value.
+
+A tree begins at a root node, which simply assigns the most frequent value of the target variable in the entire dataset. This prediction is refined by splitting the data into two subgroups using the feature that best predicts the outcomes. For our purposes, in order to determine the best splits, we use the Gini Index, which is a measure of the stability of the predictions in the tree. The Gini Index is a weighted average of the Gini Impurity score at each end node--or leaf. A low Gini Score indicates the node has a high concentration of one predicted outcome, and thus a results in a more stable prediction.
+
+For example, suppose we are predicting the home ownership status of a participant based on the splitting rule of there being one or fewer children in the household. If 99\% of participants in such households rented their home, while only 1\% owned their home, this split would have a very low Gini Score, indicating a stable prediction. Conversely, suppose we are predicting home ownership status based on whether a participant has taken antiviral medication. If 51\% of those who took the medication own their home and 49\% do not, this split would yield a high Gini Score, indicating a poor, unstable prediction.
+
+At each split, we select the feature and threshold that minimize the overall Gini Index of the resulting tree. The tree continues growing until a stopping condition is met--in our case, a minimum reduction in the Gini Index.
+
+In using classification trees for imputation, we grow classification trees for each feature with missing values, using remaining features as predictors (except for the overall outcome--seasonal flu vaccination--and participant ID). We begin with the feature with the highest proportion of missing data: income level (17\% missing). Using the remaining features, we build a classification tree to predict income levels for the observations with missing values for income. We then proceed to the feature with the next most missing data--home ownership status (8\%)--this time excluding income level to avoid imputing based on imputed values. We repeat this process until all missing values are imputed.
+
+```{r}
+# Handle missingness via imputation with classification trees
+
+#create two copies of dataframe
+flu_tree_impute <- flu_full_unknown
+flu_tree_impute_1 <- flu_full_unknown
+
+# Identify columns with missing data and take mean to find percent missing
+missing_cols <- ifelse(colMeans(is.na(flu_tree_impute)) > 0,
+                       colMeans(is.na(flu_tree_impute)),
+                       NA)
+
+# sort columns by amount missing and take their names
+missing_cols_sorted <- names(sort(missing_cols, decreasing = TRUE))
+
+# loop over vector of features w/ missing data
+    # starting with most missing
+for (i in missing_cols_sorted){
+
+  # Use rpart function to grow tree for classifying current feature
+  impute_engine <- rpart(flu_tree_impute_1[,i] ~ .,
+                      data = flu_tree_impute_1,
+                      method = "class")
+
+  # Identify rows where feature has missing data
+  where_missing <- where_na(flu_tree_impute_1[,i])
+
+  # Use engine to predict missing value and store it in copy of data frame
+  flu_tree_impute[where_missing,i] <-
+  predict(impute_engine,
+          newdata = flu_tree_impute_1[where_missing,],
+          type = "class")
+
+  # drop feature from data frame so that imputed values aren't used
+  # to impute future values
+  flu_tree_impute_1 <- flu_tree_impute_1 |>
+    select(-all_of(i))
+}
+
+# un-comment this line and comment out above to skip computation
+# load("flu_tree_impute.Rda")
+```
+
+#### Results
+
+To evaluate the performance of the classification tree imputation method, we fit a logistic regression model to predict the outcome of interest: whether each participant received the seasonal flu vaccine. For simplicity, we assess the performance of the model using in-sample predictions--that is, predictions made on the same data used for imputation. Although logistic regression is involved in the chained equations method, it is not employed as a standalone imputation technique in our analysis. As a result, we consider it a relatively neutral predictive model for comparing our imputation methods. For a detailed discussion of logistic regression for classification, see **Section III**.
+
+We assess the model's performance on the imputed data using several metrics: accuracy, classification error rate (CER), sensitivity, specificity, the geometric mean of sensitivity and specificity, and the F1 score. *Accuracy* is the proportion of correct predictions out of the total number of predictions, while *CER* is the proportion of incorrect ones. *Sensitivity* measures the proportion of correctly predicted vaccine recipients out of all participants who received the vaccine (i.e., true positive rate). Conversely, *specificity* is the proportion of correctly predicted unvaccinated participants out of all unvaccinated participants (i.e., true negative rate). The *geometric mean* and the *F1 score* measure the balance between sensitivity and specificity.
+
+The performance metrics for the classification tree imputation are presented in **Table 1**. When trained on the dataset completed by classification tree imputation, the logistic regression model is 78.9\% accurate in correctly predicting whether a participant received the seasonal flu vaccine. Among participants who actually received the vaccine, the model predicts correctly 75.3\% of the time, while among participants who did not receive the vaccine, the model predicts correctly 82.0\% of the time. 
+
+
+```{r}
+# use confusion_imputation function to get performance metrics from
+# imputation dataframe
+flu_tree_performance <- confusion_imputation(flu_tree_impute)
+
+# format results as table
+kable(flu_tree_performance,
+      digits = 4,
+      align = "l", booktabs = T,
+      caption = "Classification Tree Imputation") |>
+  kable_styling(latex_options = c("striped", "hover", "condensed"),
+                full_width = F) |> 
+  footnote(general = "Measures based on in-sample prediction using logistic regression")
+```
+
+### II.B.2: Random Forest Imputation
+
+#### Introduction
+
+The second method we investigated was random forest imputation. As an extension of the decision tree methodology, random forests can similarly be used to predict missing values for categorical variables and are thus suited to imputing the missing data in our dataset.
+
+#### Method
+
+A random forest consists of a set of decision trees, with the final prediction determined by the majority "vote" across all individual trees. Since all variables in our dataset are categorical, the decision trees in the forest are classification trees, which make predictions for missing values as described in **Section II.B.1**. However, unlike a single classification tree, each tree in a random forest is grown from a bootstrap sample. A bootstrap sample is a sample that is the same size as the original dataset, drawn with replacement from the original sample. As a result, some observations may appear more than once or not at all.
+
+Additionally, at each split in a tree, rather than evaluating all features to determine a splitting rule, the random forest only considers a random subset of features. A common rule of thumb is to use the square root of the total number of features, rounded down to the nearest integer. In our case, out of thirty-five original features, we choose from five features at each split. This random selection introduces diversity among the trees and often improves the predictive performance of the random forest. As with single trees, the Gini Index is used to evaluate the best splits and determine the stopping rule.
+
+For computational efficiency, we limit our forest to 100 trees and cap each tree at a maximum of five leaf nodes.
+
+```{r}
+# Random Forest Imputation
+
+# make copy of version of data frame
+    # leaving out ID and outcome columns
+flu_forest_impute_1 <- flu_full_unknown[,3:37]
+
+#Set random seed
+set.seed(663)
+
+#Use missForest function to impute missing values
+flu_forest_out_1 <- missForest(flu_forest_impute_1,
+                            variablewise = TRUE,
+                            ntree = 100,
+                            mtry = sqrt(ncol(flu_forest_impute_1)),
+                            maxnodes = 5)
+
+#store resulting dataset
+flu_rf <- cbind(flu_full_unknown[,1:2], flu_forest_out_1$ximp)
+
+# un-comment this line and comment out above to skip computation
+# load("flu_rf.Rda")
+```
+
+#### Results
+
+We evaluate the performance of the random forest imputation using the same approach we used for the classification tree: fitting a logistic regression model to predict whether each participant received the seasonal flu vaccine. As before, we use in-sample predictions.
+
+The results from the random forest imputation are displayed in **Table 2**. When trained on the dataset completed by random forest imputation, the logistic regression model is 78.5\% accurate in correctly predicting whether a participant received the seasonal flu vaccine. Among participants who actually received the vaccine, the model predicts correctly 74.9\% of the time, while among participants who did not receive the vaccine, the model predicts correctly 81.7\% of the time. 
+
+```{r}
+# use confusion_imputation function to get performance metrics from
+# imputation dataframe
+flu_rf_performance <- confusion_imputation(flu_rf)
+
+# format results as table
+kable(flu_rf_performance,
+      digits = 4,
+      align = "l", booktabs = T,
+      caption = "Random Forest Imputation") |>
+  kable_styling(latex_options = c("striped", "hover", "condensed"),
+                full_width = F) |> 
+  footnote(general = "Measures based on in-sample prediction using logistic regression")
+```
+
+### II.B.3: Chained Equations Imputation
+
+#### Introduction
+
+Our third imputation method uses chained equations. Chained equation imputation is a flexible technique that can handle categorical and numeric variables. As a result, it is suited to impute the missing data in our dataset.
+
+#### Method
+
+Chained equations imputation is an iterative process that preserves conditional relationships between features in the dataset. The procedure begins with the feature with the least missingness. In our case, this feature is the indicator of whether or not the participant has purchased a face mask. We impute values for the missing data in this feature using the observed values of all other features. The process then continues to the variable with the next least missingness. In this way, each subsequent imputation is conditioned on the previous imputations.
+
+Once all features with missing data have been imputed, we return to the first variable and repeat the imputation procedure, updating the values for the data that was originally missing conditioned on previous imputations. This cycle continues until the imputations converge--that is, when changes between successive iterations are no longer significant. Due to computational limitations, we cap the maximum number of iterations at 50.
+
+The technique is flexible because the imputation method used for each feature can be specified according to its variable type. In our implementation, we use logistic regression to impute missing values for binary categorical features, such as whether a participant has a chronic health condition. We use polytomous logistic regression for unordered categorical features with more than two levels, such as employment status (employed, unemployed, or not in the workforce). Lastly, for ordered categorical variables, such as income levels, we impute using a proportional odds model. Detailed discussions of polytomous logistic regression and proportional odds modeling are beyond the scope of this project (see Appendix for linked resources), while further information on logistic regression can be found in **Section III**.
+
+```{r}
+# Chained imputation
+
+# create copy of dataframe, leaving out ID and outcome columns
+flu_chain <- flu_full_unknown[,-c(1,2)]
+
+# Use mice function to impute missing values via chained imputation
+chained_impute <- mice(flu_chain,
+                       m=1,
+                       maxit=50,
+                       visitSequence = "monotone",
+                       seed=663)
+
+flu_chained_impute <- cbind(flu_full_unknown[,1:2],
+                            complete(chained_impute,1))
+
+# un-comment this line and comment out above to skip computation
+# load("flu_chained_impute.Rda")
+```
+
+#### Results
+
+We evaluate the performance of the chained equations imputation method using the same technique and metrics as in the previous approaches. The results are summarized in **Table 3**. When trained on the dataset completed by chained equations imputation, the logistic regression model is 78.8\% accurate in correctly predicting whether a participant received the seasonal flu vaccine. Among participants that actually received the vaccine, the model correctly predicts 75.3\% of the time, while among participants that did not receive the vaccine, the model correctly predicts 81.8\% of the time.
+
+```{r}
+# use confusion_imputation function to get performance metrics from
+# imputation dataframe
+flu_chained_performance <- confusion_imputation(flu_chained_impute)
+
+# format results as a table
+kable(flu_chained_performance,
+      digits = 4,
+      align = "l", booktabs = T,
+      caption = "Chained Equations Imputation (Monotone with 50 Iterations)") |>
+  kable_styling(latex_options = c("striped", "hover", "condensed"),
+                full_width = F) |> 
+  footnote(general = "Measures based on in-sample prediction using logistic regression.",
+           escape = FALSE)
+```
+
+### II.B.4: k-Nearest Neighbor Imputation
+
+#### Introduction
+
+Lastly, we evaluated k-Nearest Neighbor (k-NN) imputation. k-NN is a non-parametric algorithm, meaning it makes no assumptions regarding the distribution of the data. It is flexible and can be adapted to both numeric and categorical data, making it suitable for imputing the missing values in our dataset.
+
+#### Method
+
+The idea behind k-NN imputation is to estimate a missing value by identifying the $k$ most similar observations and using their values to make a prediction. For computational efficiency, we set $k = 5$. That is, for each missing value, we identify the five most similar observations and impute using the most frequent value among them.
+
+To determine similarity between observations, we use Gower's distance, which is a weighted average of distances across variables. For binary variables--such as whether or not a participant purchased a face mask--the distance is 0 if the values match and 1 otherwise. For example, two individuals who both purchased a face mask would have a distance of 0 on this variable, while an individual who did not purchase a mask would have a distance of 1 from the other two. For unordered categorical features--such as occupation--we use the Dice distance. We link to a discussion of Dice distance in the Appendix. For ordered categorical variables--such as income level--the distance is calculated as the positive number of steps between the two levels, divided by the total possible steps. For example, if one participant earns below the poverty line and another earns under \$75,000 but above the poverty line, they are one step apart. Since there are three income levels in the dataset, the total number of possible steps is two, so the distance between the observations in terms of income is $\frac{1}{2}$.
+
+Once all distances are computed, the five observations with the smallest Gower's distance to the observation in question are selected, and their mode (i.e. most common value) is used to impute the missing value.
+
+```{r}
+flu_knn <- flu_full_unknown[,3:37]
+
+set.seed(663)
+
+# use kNN with k = 5 and Gower's distance as metric to impute
+flu_knn_impute <- kNN(data = flu_knn,
+     metric = "Gower",
+     k = 5,
+     weightDist = F)
+
+flu_knn_impute <- cbind(flu_full_unknown[,1:2], flu_knn_impute)
+
+# un-comment this line and comment out above to skip computation
+# load("flu_knn_impute.Rda")
+```
+
+#### Results
+
+We evaluate the performance of k-NN imputation on our dataset using the same technique and metrics as in previous methods. The results are displayed in **Table 4**. When trained on the dataset completed by 5-NN imputation, the logistic regression model is 78.7\% accurate in correctly predicting whether a participant received the seasonal flu vaccine. Among participants that actually received the vaccine, the model correctly predicts 75.2\% of the time, while among participants that did not receive the vaccine, the model correctly predicts 81.7\% of the time. 
+
+```{r}
+# use confusion_imputation function to get performance metrics from
+# imputation dataframe
+flu_knn_performance <- confusion_imputation(flu_knn_impute)
+
+# format results as a table
+kable(flu_knn_performance,
+      digits = 4,
+      align = "l", booktabs = T,
+      caption = "5-Nearest Neighbor Imputation") |>
+  kable_styling(latex_options = c("striped", "hover", "condensed"),
+                full_width = F) |> 
+  footnote(general = "Measures based on in-sample prediction using logistic regression.")
+```
+
+### II.B.5: Comparison of Imputation Techniques
+
+After testing the four imputation techniques, we compare their performances using the metrics discussed in **Section II.B.1**. We also evaluate these metrics on the complete case analysis (CCA) dataset and report the results in **Table 5**. A visual comparison across all methods, including CCA, is shown in **Figure 3**. We exclude the CER from the plot, as it distorts the scale and can be inferred from *Accuracy*.
+
+From the figure, we observe that all five datasets perform similarly across most metrics. However, the logistic regression model achieves the best performance on the CCA dataset for every metric except *Specificity*, where the Classification Tree imputation performs the best. Among the imputation methods, the Classification Tree consistently performs the best across each metric, followed by Chained Equations Imputation, and then k-NN. Somewhat surprisingly, the Random Forest Imputation performs the worst across all metrics, despite the fact that it is an extension of the Classification Tree method. However, it is possible that a larger forest could yield better results.
+
+Given that CCA yields the best performance on four of the five metrics, we proceed with the CCA dataset for the prediction portion of the project. Due to the large overall sample size and prior treatment of informative missingness as discussed in **Section II.A**, we believe there is minimal risk of introducing bias in our results by excluding incomplete observations. In total, CCA removes 5,175 observations with missing data from the original 26,707, resulting in a final dataset of 21,532 observations across 37 variables.
+
+```{r}
+# use confusion_imputation function to get performance metrics from
+# cca dataframe
+flu_cca_performance <- confusion_imputation(flu_full_cca)
+
+# format results as a table
+kable(flu_cca_performance,
+      digits = 4,
+      align = "l", booktabs = T,
+      caption = "Complete Case Analysis") |>
+  kable_styling(latex_options = c("striped", "hover", "condensed"),
+                full_width = F) |> 
+  footnote(general = "Measures based on in-sample prediction using logistic regression.")
+```
+
+```{r, fig.cap="Comparison of Imputation Techniques across Performance Metrics"}
+#add column to each performance dataframe to specify imputation technique
+flu_tree_performance$Method <- "Classification Tree"
+flu_rf_performance$Method <- "Random Forest"
+flu_chained_performance$Method <- "Chained Equations"
+flu_knn_performance$Method <- "k-NN"
+flu_cca_performance$Method <- "Complete Case Analysis"
+
+# combine all performance dataframes row-wise
+performance_df <- rbind(
+  flu_tree_performance,
+  flu_rf_performance,
+  flu_chained_performance,
+  flu_knn_performance,
+  flu_cca_performance
+) |> 
+  #filter out CER as it messes up scale, and is redundant w/ accuracy
+  filter(Measure != "CER") |> 
+  # Rename Geometric Mean to abbreviation to fit on plot
+  mutate(Measure = ifelse(Measure == "Geometric Mean of Sens. and Spec.",
+                "Geom. Mean", Measure))
+
+# plot performance as line plot
+ggplot(performance_df, aes(x = Measure, y = Result, group = Method,
+                           color = Method)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Performance Metric") +
+    theme(legend.position = "bottom")
+
+
+```
+
+
+### II.C: Exploratory Data Analysis
+
+Using the CCA dataset, we begin with a brief exploratory data analysis (EDA) to better understand the distributions and relationships between key variables. We focus on six variables of particular interest: age group, race, education level, income level, health insurance status, and residential area (major city, minor city, or rural area, as defined by the Census Metropolitan Statistical Area guidelines). Within each of these variables, we look at the split between male and female participants.
+
+We display the distributions using bar plots. In **Figure 4**, we observe that the most common age group in the sample is 65 and older, followed by 18-34, then 55-64, 45-54, and 35-44. We also display the proportion of male and female participants within each age group. Across all age groups, female participants outnumber male participants, which aligns with the overall distribution of sex in the sample.
+
+```{r, fig.cap = "Distribution of Age Groups in Sample"}
+# Plot age group variable as a bar plot
+# use sex as fill
+ggplot(flu_full_cca) +
+  geom_bar(aes(x = age_group, fill = sex)) +
+  labs(x = "Age Group", y= "Count",
+       title = "Distribution of Age Groups in Sample",
+       fill = "Sex") +
+  theme(legend.position = "bottom")
+```
+
+In **Figure 5**, we see that the vast majority of participants identify as white, with nearly 12,000 individuals in this group. The next most common racial groups are Black, Hispanic, and Other or Multiracial, each with fewer than 1,500 participants. Given historical disparities in healthcare access and trust in the public health system across racial groups in the U.S., we anticipate that race may be a meaningful predictor of seasonal vaccine uptake. However, the substantial racial imbalance in the daataset may limit the model's ability to make accurate predictions for underrepresented racial groups.
+
+```{r, fig.cap = "Distribution of Races in Sample"}
+# Plot race variable as a bar plot
+# use sex as within bar fill
+ggplot(flu_full_cca) +
+  geom_bar(aes(x = race, fill = sex))  +
+  labs(x = "Age Group", y= "Count",
+       title = "Distribution of Race in Sample",
+       fill = "Sex") +
+  theme(legend.position = "bottom")
+```
+
+In **Figure 6**, we observe that most participants fall into three education categories--college graduates, those with some college education, and individuals with a high school diploma or equivalent--each with over 4,000 participants. In contrast, the group with fewer than 12 years of education is much smaller, with approximately 1,600 individuals. We hypothesize that education levels may be associated with seasonal vaccine uptake, as individuals with more education may be more aware of health risks.
+
+```{r, fig.cap = "Distribution of Education Levels in Sample"}
+# Plot education variable as a bar plot
+# using sex as fill
+ggplot(flu_full_cca) +
+  geom_bar(aes(x = education, fill = sex)) +
+  labs(x = "Education Level", y= "Count",
+       title = "Distribution of Education Levels in Sample",
+       fill = "Sex") +
+  theme(legend.position = "bottom")
+```
+
+**Figure 7** shows the distribution of annual income and poverty status among participants in the sample. Income is categorized into three groups: those earning above \$75,000, those earning at or below \$75,000 but above the poverty line, and those below the poverty line. The middle-income group is the largest, comprising nearly 12,500 individuals. The high-income group follows with about 6,500 participants, while approximately 2,500 participants fall below the poverty line. We expect income to be a strong predictor of seasonal vaccine uptake, as higher income is often associated with better access to healthcare.
+
+```{r, fig.cap = "Distribution of Income Levels in Sample"}
+# Plot income levels as a bar plot
+# using sex as fill
+ggplot(flu_full_cca) +
+  geom_bar(aes(x = income_poverty, fill = sex)) +
+  labs(x = "Income Level", y= "Count",
+       title = "Distribution of Income Levels in Sample",
+       fill = "Sex") +
+  theme(legend.position = "bottom")
+```
+
+Turning to health insurance status, **Figure 8** shows that the majority of participants--over 11,500--report having health insurance, while 1,500 do not have coverage. Because insurance often covers seasonal immunizations, we expect this feature to be a strong predictor of seasonal flu vaccine uptake. Nevertheless, insurance status is missing for more than 9,000. To retain these observations, we previously categorized their insurance status as "unknown," which may capture useful information. However, this high level of missingness may weaken the predictive power from this feature.
+
+```{r, fig.cap = "Distribution of Health Insurance Coverage in Sample"}
+
+# Plot insured status as a bar plot
+# using sex as fill
+
+flu_full_cca$health_insurance <- 
+  flu_full_cca$health_insurance |>
+  recode_factor("0" = "No Insurance",
+                "1" = "Has Insurance",
+                "Unknown" = "Unknown")
+
+ggplot(flu_full_cca) +
+  geom_bar(aes(x = health_insurance, fill = sex)) +
+  labs(x = "Health Insurance", y= "Count",
+       title = "Distribution of Health Insurance Coverage in Sample",
+       fill = "Sex") +
+  theme(legend.position = "bottom")
+```
+
+Lastly, **Figure 9** shows the distribution of participants across census-defined metropolitan areas. In our sample, over 9,000 participants live in non-principal metropolitan statistical areas (MSA). About 6,250 participants live in a principal city, while around 6,000 live in non-MSAs, i.e., less densely populated regions. Since access to healthcare is typically better in urban areas, we expect geographic area to also be an important predictor of seasonal vaccine uptake.
+
+```{r, fig.cap= "Distribution of Census Areas in Sample"}
+# Census MSA
+
+# fix typo
+flu_full_cca$census_msa <- flu_full_cca$census_msa |> 
+  recode_factor("MSA, Not Principle  City" = "MSA, Not Principle City",
+  )
+
+# Plot census as a bar plot
+# using sex as fill
+ggplot(flu_full_cca) +
+  geom_bar(aes(x = census_msa, fill = sex)) +
+  labs(x = "Census Area", y= "Count",
+       title = "Distribution of Census Areas in Sample",
+       fill = "Sex") +
+  theme(legend.position = "bottom")
+```
+
+To summarize the six features, we display the sample characteristics for these variables--along with sex--partitioned by their seasonal vaccination status in **Table 6**. We conduct Chi-squared tests of independence to assess the association between each feature and vaccine status. As shown in the table, all tests yield p-values below the significance level $\alpha = 0.05$, supporting our belief that these variables may be useful predictors of vaccination status. With that in mind, we turn to the prediction task, beginning with logistic regression-based methodology.
+
+```{r, fig.cap= "Table 6: Sample Characteristics by Seasonal Vaccine Status"}
+
+# add labels to seasonal vaccine to display on table
+flu_full_cca_label <- flu_full_cca |>
+  mutate(
+    seasonal_vaccine = factor(
+      seasonal_vaccine, 
+      labels = c("Not vaccinated", "Vaccinated")
+    )
+  )
+
+# create table to display distribution of sample across features
+characteristic_table <- flu_full_cca_label |>
+  # add labels for each variable in the table
+  set_variable_labels(
+    age_group = "Age Group",
+    education = "Education Level",
+    income_poverty = "Income Level",
+    race = "Race",
+    health_insurance = "Insured Status",
+    census_msa = "Census MSA",
+    sex = "Sex"
+  ) |> 
+  tbl_summary(
+     # select seasonal_vaccine as grouping variable
+    by = seasonal_vaccine,
+    # select features to include
+    include = c(
+      age_group,
+      education, 
+      income_poverty,
+      race,
+      health_insurance,
+      census_msa,
+      sex
+    )
+  ) |>
+  add_overall(last= TRUE) |>  # add overall column
+  # use Chi-Squared test to check independence of each feature to group
+  add_p(test = all_categorical() ~ "chisq.test") |> 
+  modify_caption("Sample Characteristics by Seasonal Vaccine Status") |> 
+  as_kable_extra() |> 
+    kable_styling(font_size = 10, full_width = F)
+```
+
+```{r}
+characteristic_table
+
+```
+
+
+# III. Method 1: Logistic Regression + Penalized Regression
+
+## III.A. Introduction
+
+We begin the prediction portion of the project by investigating logistic regression and penalized logistic regression as methods for predicting seasonal flu vaccination status. Logistic regression is a generalized linear model, which predicts a binary response based on a set of features. As a result, it is well-suited to predict our outcome of interest: whether or not a participant received the seasonal flu vaccine.
+
+Logistic regression is a parametric model and, therefore, makes certain assumptions about the relationship between the predictors and the outcome. In particular, it assumes a linear relationship between the features and the log-odds of the response. To evaluate whether this assumption holds for our data, we generate empirical log-odds plots, which plot the numeric features against the log-odds of vaccination. **Figure 10** shows an example of an empirical log-odds plot for participants' perceived risk of seasonal flu without a vaccine. The linear trend of the plot suggests that the linearity assumption is reasonable for this feature.
+
+```{r}
+logOddsPlot <- function(x, y, xname, formulahere){
+
+  if(class(y)=="factor"){
+    baseline = levels(y)[1]
+    y <- ifelse(y == baseline, 0, 1)
+  }
+  
+  sort = order(x)
+  x = x[sort]
+  y = y[sort]
+  a = seq(1, length(x), by=.05*length(y))
+  b = c(a[-1] - 1, length(x))
+  
+  prob = xmean = ns = rep(0, length(a)) # ns is for CIs
+  for (i in 1:length(a)){
+    range = (a[i]):(b[i])
+    prob[i] = mean(y[range])
+    xmean[i] = mean(x[range])
+  }
+  
+  extreme = (prob == 1 | prob == 0)
+  prob[prob == 0] = .01
+  prob[prob == 1] = .99
+  
+  g = log(prob/(1-prob))
+  
+  dataHere <- data.frame("x" = b, "LogOdds" = g)
+  
+  suppressMessages(library(ggplot2))
+  
+  ggplot(dataHere, aes(x =xmean, y = LogOdds)) + geom_point() + geom_smooth(formula = formulahere, method = "lm", se = FALSE) + labs(x = xname, y = "Log Odds")
+}
+```
+
+```{r, fig.cap= "Empirical Log-odds plot of Perceived Seasonal Flu Risk"}
+logOddsPlot(x= as.numeric(flu_full_cca$opinion_seas_risk), y= flu_full_cca$seasonal_vaccine, xname = "Opinion on Seasonal Flu Risk", formulahere = y ~ x)
+
+```
+
+To improve upon the standard logistic regression model, we also investigate incorporating elastic net into the model. Elastic net combines two forms of penalized regression--ridge and lasso--which can help improve estimates in the presence of multicollinearity (i.e. when features are highly correlated with one another). Given the large number of features in our dataset and the potential for correlation between them, we believe it reasonable to apply elastic net regression.
+
+## III.B. Method
+
+In logistic regression, the model predicts the logit (or log-odds) of a binary outcome by selecting coefficients that minimize deviance. The probability of the outcome is a function of the logit, so based on a probabilistic threshold (0.5 in our case), the model predicts the most likely outcome for an observation from the values of its features.
+
+The elastic net model functions in much the same way. However, instead of minimizing only the deviance to select coefficients, it also minimizes a penalty term. This penalty term combines ridge and lasso penalties, which helps reduce the impact of multicollinearity among features.
+
+```{r}
+
+# change labels for seasonal vaccine for logistic reg. model
+flu_logistic <- flu_full_cca |> 
+  mutate(seasonal_vaccine = factor(seasonal_vaccine,
+                                   levels = c("0", "1"),
+                                   labels = c("NotVaccinated", "Vaccinated")))
+  
+# specify 10-fold CV as cross-validation method
+ctrlspecs <- trainControl(method="cv", 
+                          number=10, 
+                          savePredictions="all",
+                          classProbs=TRUE)
+
+# set random seed for cross validation
+set.seed(663)
+
+#fit logistic regression model and use 10-fold CV
+logistic_model <- train(seasonal_vaccine ~ ., data=flu_logistic[,-1], 
+                method="glm", 
+                family=binomial(),
+                trControl=ctrlspecs)
+
+# save predicted values and observed values of outcome
+predicted <- logistic_model$pred$pred
+observed <- logistic_model$pred$obs
+
+# create confusion matrix to compare predictions vs. observed vals
+logistic_confusion <- confusionMatrix(predicted, observed,
+                                      positive = "Vaccinated")
+
+```
+
+```{r}
+# elastic net
+
+#create copy of re-labelled dataframe
+flu_elastic <- flu_logistic
+
+# specify design matrix for model, leave out the id number
+XD <- model.matrix(seasonal_vaccine ~. , data = flu_elastic[,-1])
+
+# specify sequence of lambdas to test
+lambda_seq <- seq(from = 0, to = 10, by = .1)
+
+# specify sequence of alphas to test
+alpha_seq <- seq(from = 0, to = 1 , by = .01)
+
+# create dataframe to store the values from combinations of
+# alpha and lambda
+fits <- data.frame("alpha" = numeric(),
+                   "lambda" = numeric(),
+                   "error" = numeric()
+                   )
+
+# loop over values of alpha
+for (i in alpha_seq){
+  # fit elastic net model using design matrix, seasonal vaccine,
+  # and current value of alpha over sequence of possible lambdas
+  # evaluate using 10-fold cv
+  fit_elastic <- cv.glmnet(XD[,-1], flu_elastic[,"seasonal_vaccine"],
+                           alpha = i,
+    lambda = lambda_seq,
+    family = "binomial",
+    type.measure = "class",
+    nfolds = 10)
+
+  # store best lambda
+  lambda <- fit_elastic$lambda.min
+
+  # store corresponding error term
+  error <- min(fit_elastic$cvm)
+
+  # create dataframe to store best lambda and corresponding error
+  # along with current alpha
+  fit_results <- data.frame("alpha" = i, "lambda" = lambda, "error" = error)
+
+  # add that df as row to fits data_frame
+  fits <- rbind(fits, fit_results)
+}
+
+# select fit that minimizes error
+best_fit <- fits[which.min(fits$error),]
+
+```
+
+
+## III.C. Results
+
+In fitting our elastic net model, we observe that the value of lambda that minimizes the error in our regression is zero. Since lambda is the constant coefficient of the penalization term, in this case, there is no penalty applied to the model. Without a penalty term, elastic net is equivalent to logistic regression, so we only evaluate the performance of the fitted logistic regression model.
+
+To assess the predictive power of the model, we use 10-fold cross-validation. This method trains the model on $\frac{9}{10}$ of the dataset, evaluates it on the remaining $\frac{1}{10}$, and repeats this process for each 9-1 split. The most common predicted values across each fold are used as the final prediction.
+
+We use the same performance metrics as we did with our imputation methods--accuracy, CER, sensitivity, specificity, their geometric mean, and the F1 score. Results for the logistic regression are displayed in **Table 7**. We observe that logistic regression has an accuracy of approximately 78.6\%. The model performs slightly worse when predicting participants who actually received the seasonal flu shot, with a sensitivity of 75.4%. However, it performs slightly better when predicting participants who did not receive the flu shot, with a specificity of 81.4%.
+
+```{r}
+
+# use class_performance function to calc. performance measures from
+# confusion matrix
+logistic_performance <- class_performance(logistic_confusion$table)
+
+# format as a table
+kable(logistic_performance,
+      digits = 4,
+      align = "l", booktabs = T,
+      caption = "Logistic Regression Prediction Performance") |>
+  kable_styling(latex_options = c("striped", "hover", "condensed"),
+                full_width = F)
+
+```
+
+
+# IV. Method 2: Classification Trees and Random Forest
+
+## IV.A. Introduction
+
+We next examine two tree-based methods for prediction--classification trees and random forests. As discussed in **Sections II.B.1** and **II.B.2**, these approaches are well-suited for predicting categorical outcomes. Since seasonal flu vaccination status is a binary categorical variable, both methods are appropriate for our task.
+
+## IV.B. Method
+
+The methodologies for classification trees and random forests are outlined in detail in **Sections II.B.1** and **II.B.2**, respectively. However, it is important to note that, unlike logistic regression, these methodologies are non-parametric, meaning they do not assume an underlying shape to the relationship between the predictors and the response.
+
+In **Figure 11**, we display the fitted classification tree. The root node indicates that approximately 53 percent of the sample did not get the vaccine, while about 47 percent did. The first split is based on the participant's perceived risk of contracting the seasonal flu without a vaccine--rated on a scale from 1 (least risk) to 5 (most risk). The tree splits at a threshold of less than 2.5, meaning that participants who rated their risk as 1 or 2 were more likely not to get vaccinated, while those who rated their risk as 3 or higher were more likely to get the vaccine. For the low-risk participants, the next split occurs based on whether their doctor recommended the seasonal flu vaccine. If no recommendation was given, participants were less likely to have been vaccinated. Conversely, those who did receive a recommendation from their doctor were more likely to get the vaccine.
+
+```{r}
+
+# Convert ordered categorical variables back to numeric variables
+# for display purposes in tree
+indices <- c(3, 4, 18:23, 34:35)
+
+for(i in indices){
+  flu_logistic[,i] <- as.numeric(flu_logistic[,i])
+}
+
+#create copy of data frame
+flu_tree <- flu_logistic
+
+# set up 10-fold cv
+ctrlspecs <- trainControl(method="cv", 
+                          number=10, 
+                          savePredictions="all",
+                          classProbs=TRUE)
+
+# set random seed for cross validation
+set.seed(663)
+
+# train model using rpart to build classification trees
+# with 10-fold cv
+tree_model <- train(seasonal_vaccine ~ ., data=flu_tree[,-1], 
+                method="rpart",
+                trControl=ctrlspecs)
+
+# store predicted values
+predicted <- tree_model$pred$pred
+
+# store observed values
+observed <- tree_model$pred$obs
+
+# build confusion matrix to compare predicted vs. observed
+tree_confusion <- confusionMatrix(predicted, observed,
+                                   positive = "Vaccinated")
+```
+
+
+```{r, fig.cap="Classification Tree for Predicting Seasonal Flu Vaccine"}
+# store aggregated tree from CV
+tree_final <- tree_model$finalModel
+
+# plot tree for display
+fancyRpartPlot(tree_final, palettes = c("Reds", "Greens"),
+               caption = NULL)
+```
+
+
+```{r}
+
+#set random seed
+set.seed(663)
+
+#create copy of re-labelled dataframe
+flu_rf_cca <- flu_logistic
+
+# build random forest using 1000 trees and with sqrt of columns
+# as factors to consider at each split
+rf_model <- randomForest(seasonal_vaccine ~.,data= flu_rf_cca[,-1],
+             mtry = sqrt(ncol(flu_rf_cca)),
+             ntree = 1000,
+             compete = FALSE)
+```
+
+Turning to the random forest model, we present the ten most important and ten least important features ranked by the mean decrease in Gini Index in **Figure 12** and **Figure 13**, respectively. Similar to the classification tree, the most important feature is the participant's perceived risk of illness without the seasonal flu vaccine. This feature is followed closely by the participant's belief in the effectiveness of the vaccine. These results are unsurprising, as we would expect both perceptions to figure strongly into a person's decision to get vaccinated. In contrast, the least important features are whether a participant has taken anti-viral medications and whether they have purchased a face mask--behaviors that, at least in the context of 2009, are less directly related to vaccination decisions.
+
+```{r, fig.cap="10 Most Important Features in Random Forest"}
+
+# store Gini importance from model as data frame
+importance_df <- as.data.frame(rf_model$importance) |> 
+  rownames_to_column() |> 
+  arrange(desc(MeanDecreaseGini))
+
+# re-label column names
+colnames(importance_df) <- c("Feature", "Mean Decrease in Gini")
+
+# plot 10 most important features in descending order
+ggplot(importance_df[1:10,], aes(x = reorder(Feature,`Mean Decrease in Gini`),
+                                 y = `Mean Decrease in Gini`)) +
+  geom_col(fill = "coral") +
+  coord_flip() +
+  labs(x = "Feature",
+       caption = "Ranked by Mean Decrease in Gini Impurity Score")
+
+importance_df <- importance_df |> 
+  arrange(`Mean Decrease in Gini`)
+
+```
+
+```{r, fig.cap="10 Least Important Features in Random Forest"}
+# plot 10 most important features in descending order
+ggplot(importance_df[1:10,], aes(x = reorder(Feature,-`Mean Decrease in Gini`),
+                                 y = `Mean Decrease in Gini`)) +
+  geom_col(fill = "turquoise") +
+  coord_flip() +
+  labs(x = "Feature",
+       caption = "Ranked by Mean Decrease in Gini Impurity Score")
+
+
+
+```
+
+
+## IV.C Results
+
+As with the logistic regression model, we use 10-fold cross-validation to assess the performance of the classification tree, applying the same performance metrics as before. These results are summarized in **Table 8**.
+
+For the random forest, however, we take advantage of out-of-bag (OOB) data to evaluate the technique without needing 10-fold cross validation. OOB data refers to the subset of observations left out of each tree during the bootstrapping process. By aggregating the most common predictions made on OOB data across trees, we generate final predictions and compute performance metrics, which are displayed in **Table 9**.
+
+The classification tree achieves an overall accuracy of approximately 68.3\%. In comparison, the random forest has a significantly higher predictive accuracy of 78.6\%, which is expected given the ensembling involved in the random forest, discussed in **Section II.B.2**. The classification tree has a sensitivity of about 60.0\%, whereas the random forest correctly predicts vaccination for 76.1% of vaccinated participants. While the classification tree performs reasonably well in terms of specificity (75.6\%), the random forest outperforms it again, correctly identifying unvaccinated participants 81.0% of the time.
+
+```{r}
+
+# use class_performance function to calc. performance measures
+# from confusion matrix
+tree_performance <- class_performance(tree_confusion$table)
+
+# format as a table
+kable(tree_performance,
+      digits = 4,
+      align = "l", booktabs = T,
+      caption = "Classification Tree Prediction Performance") |>
+  kable_styling(latex_options = c("striped", "hover", "condensed"),
+                full_width = F)
+
+```
+
+
+```{r}
+
+# use class_performance function to calc. performance measures from
+# confusion matrix
+rf_performance <- class_performance(rf_model$confusion)
+
+# format as a table
+kable(rf_performance,
+      digits = 4,
+      align = "l", booktabs = T,
+      caption = "Random Forest Prediction Performance") |>
+  kable_styling(latex_options = c("striped", "hover", "condensed"),
+                full_width = F)
+
+```
+
+# V. Concluisions
+
+```{r}
+rows_w_missing <- sum(rowSums(is.na(flu_full)) > 0)
+```
+
+The primary goal of this project was to predict an individual's seasonal flu vaccination status based on demographic information and health-related characteristics. We used the National 2009 H1N1 Flu Survey data, which contains 26,707 observations across 37 variables. Our analysis began by addressing missing data in the dataset. Notably, over half of all observations (14,913) contained missing values.
+
+We evaluated four imputation techniques to handle this missingness: classification trees, random forests, chained equations, and k-nearest neighbors (k-NN). Each imputed dataset was assessed using a neutral logistic regression model and in-sample prediction. We compared these results to a complete case analysis (CCA) and found that the CCA version performed the best across four of five performance metrics.
+
+Using the CCA dataset, we then applied three statistical learning methods--logistic regression, classification trees, and random forests--to predict vaccination status. Of these techniques, the random forest performed the best, achieving the highest accuracy (78.6%), sensitivity (76.1%), and specificity (81.0%). In practice, we would recommend using the random forest due to its strong predictive performance, flexibility with a variety of data types, and lack of reliance on parametric assumptions. The main drawback of the technique is that, unlike logistic regression or a classification tree, it cannot be easily interpreted in terms of associations between the outcome and the features. However, by using feature importance analysis, we can attempt to identify key predictive variables.
+
+Our feature importance analysis of the random forest indicated that the most important predictors of vaccination were a participant’s perceived risk of illness without the seasonal flu vaccine and their belief in the vaccine’s effectiveness. In contrast, behavioral features like antiviral medication usage and mask purchasing were far less predictive.
+
+Several limitations may affect the validity of our findings. Most notably, due to computational constraints, we restricted the complexity of our imputation techniques. For instance, in the random forest--which performed the worst of any imputation--we capped the number of trees at 100 and limited the number of terminal nodes per tree to 5. Similarly, for the chained equations imputation, we only ran 50 iterations and performed a single imputation. Increased processing power would have allowed us to run more iterations and aggregate multiple imputations. Lastly, we limited k-NN imputation to $k = 5$. With more computing power, we could test higher values of $k$ to achieve the best performance from the imputation.
+
+We also originally intended to use a k-NN algorithm for prediction but were again limited by computing resources. Future work could incorporate k-NN as well as other computationally expensive prediction techniques.
+
+Nevertheless, while none of our prediction techniques achieved perfect classification, the results suggest that personal beliefs about flu risk and vaccine efficacy are strong predictors of vaccination behavior. These insights could be used to direct public health messaging and encourage seasonal vaccine uptake. Future analyses could apply these prediction techniques to other vaccines--such as the H1N1 vaccine included in the dataset--to assess their generalizability. Additionally, the models could be applied to more recent datasets--especially in light of the rise in vaccine skepticism following the COVID-19 pandemic--to determine whether they remain effective in the current context.
+
+
+# References
+
+::: {#refs}
+:::
+
+# Appendix
+
+## Polytomous logistic regression {.appendix}
+https://online.stat.psu.edu/stat504/lesson/8/8.1
+
+## Proportional odds modeling  {.appendix}
+https://peopleanalytics-regression-book.org/ord-reg.html
+
+## Dice distance: {.appendix}
+https://distancia.readthedocs.io/en/latest/Dice.html
