@@ -10,6 +10,9 @@ This project aims to predict seasonal flu vaccine uptake using data from the Nat
 * [Project rendered as pdf](/final-project-663.pdf)
 * [Project write-up with annotated code in .qmd format](/final-project-663-codebook.qmd)
 * [References in .bib format](/references.bib)
+* .csv files to read in data
+    * [Features data](/training_set_features.csv)
+    * [Outcome data](/training_set_labels.csv)
 * .Rda files to skip computing imputation steps
     * [CART imputation](/flu_tree_imput.Rda)
     * [Random Forest imputation](/flu_rf.Rda)
