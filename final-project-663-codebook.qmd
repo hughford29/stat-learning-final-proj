@@ -239,7 +239,7 @@ flu_full_unknown_2[,"rent_or_own"] <- ifelse(
                       "Unknown",
                       flu_full[,"rent_or_own"])
 
-#Handle missing data for doctor_rec_h1n1 and doctor_recc_seasonal as unknown
+#Handle missing data for employment_status and education as unknown
 flu_full_unknown_2[,"employment_status"] <- ifelse(
                       is.na(flu_full[,"employment_status"] ) == TRUE,
                       "Unknown",
