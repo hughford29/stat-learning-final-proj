@@ -349,8 +349,8 @@ In using classification trees for imputation, we grow classification trees for e
 # Handle missingness via imputation with classification trees
 
 #create two copies of dataframe
-flu_tree_impute <- flu_full_unknown
-flu_tree_impute_1 <- flu_full_unknown
+flu_tree_impute <- flu_full_unknown # final copy
+flu_tree_impute_1 <- flu_full_unknown[,3:37] # loop copy w/o id or outcome
 
 # Identify columns with missing data and take mean to find percent missing
 missing_cols <- ifelse(colMeans(is.na(flu_tree_impute)) > 0,
