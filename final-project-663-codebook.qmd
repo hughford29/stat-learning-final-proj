@@ -394,7 +394,7 @@ To evaluate the performance of the classification tree imputation method, we fit
 
 We assess the model's performance on the imputed data using several metrics: accuracy, classification error rate (CER), sensitivity, specificity, the geometric mean of sensitivity and specificity, and the F1 score. *Accuracy* is the proportion of correct predictions out of the total number of predictions, while *CER* is the proportion of incorrect ones. *Sensitivity* measures the proportion of correctly predicted vaccine recipients out of all participants who received the vaccine (i.e., true positive rate). Conversely, *specificity* is the proportion of correctly predicted unvaccinated participants out of all unvaccinated participants (i.e., true negative rate). The *geometric mean* and the *F1 score* measure the balance between sensitivity and specificity.
 
-The performance metrics for the classification tree imputation are presented in **Table 1**. When trained on the dataset completed by classification tree imputation, the logistic regression model is 78.9\% accurate in correctly predicting whether a participant received the seasonal flu vaccine. Among participants who actually received the vaccine, the model predicts correctly 75.3\% of the time, while among participants who did not receive the vaccine, the model predicts correctly 82.0\% of the time. 
+The performance metrics for the classification tree imputation are presented in **Table 1**. When trained on the dataset completed by classification tree imputation, the logistic regression model is 78.6\% accurate in correctly predicting whether a participant received the seasonal flu vaccine. Among participants who actually received the vaccine, the model predicts correctly 75.0\% of the time, while among participants who did not receive the vaccine, the model predicts correctly 81.7\% of the time. 
 
 
 ```{r}
@@ -487,22 +487,22 @@ The technique is flexible because the imputation method used for each feature ca
 
 ```{r}
 # Chained imputation
-
-# create copy of dataframe, leaving out ID and outcome columns
-flu_chain <- flu_full_unknown[,-c(1,2)]
-
-# Use mice function to impute missing values via chained imputation
-chained_impute <- mice(flu_chain,
-                       m=1,
-                       maxit=50,
-                       visitSequence = "monotone",
-                       seed=663)
-
-flu_chained_impute <- cbind(flu_full_unknown[,1:2],
-                            complete(chained_impute,1))
+# 
+# # create copy of dataframe, leaving out ID and outcome columns
+# flu_chain <- flu_full_unknown[,-c(1,2)]
+# 
+# # Use mice function to impute missing values via chained imputation
+# chained_impute <- mice(flu_chain,
+#                        m=1,
+#                        maxit=50,
+#                        visitSequence = "monotone",
+#                        seed=663)
+# 
+# flu_chained_impute <- cbind(flu_full_unknown[,1:2],
+#                             complete(chained_impute,1))
 
 # un-comment this line and comment out above to skip computation
-# load("flu_chained_impute.Rda")
+load("flu_chained_impute.Rda")
 ```
 
 #### Results
@@ -540,20 +540,20 @@ To determine similarity between observations, we use Gower's distance, which is 
 Once all distances are computed, the five observations with the smallest Gower's distance to the observation in question are selected, and their mode (i.e. most common value) is used to impute the missing value.
 
 ```{r}
-flu_knn <- flu_full_unknown[,3:37]
-
-set.seed(663)
-
-# use kNN with k = 5 and Gower's distance as metric to impute
-flu_knn_impute <- kNN(data = flu_knn,
-     metric = "Gower",
-     k = 5,
-     weightDist = F)
-
-flu_knn_impute <- cbind(flu_full_unknown[,1:2], flu_knn_impute)
+# flu_knn <- flu_full_unknown[,3:37]
+# 
+# set.seed(663)
+# 
+# # use kNN with k = 5 and Gower's distance as metric to impute
+# flu_knn_impute <- kNN(data = flu_knn,
+#      metric = "Gower",
+#      k = 5,
+#      weightDist = F)
+# 
+# flu_knn_impute <- cbind(flu_full_unknown[,1:2], flu_knn_impute)
 
 # un-comment this line and comment out above to skip computation
-# load("flu_knn_impute.Rda")
+load("flu_knn_impute.Rda")
 ```
 
 #### Results
@@ -579,9 +579,9 @@ kable(flu_knn_performance,
 
 After testing the four imputation techniques, we compare their performances using the metrics discussed in **Section II.B.1**. We also evaluate these metrics on the complete case analysis (CCA) dataset and report the results in **Table 5**. A visual comparison across all methods, including CCA, is shown in **Figure 3**. We exclude the CER from the plot, as it distorts the scale and can be inferred from *Accuracy*.
 
-From the figure, we observe that all five datasets perform similarly across most metrics. However, the logistic regression model achieves the best performance on the CCA dataset for every metric except *Specificity*, where the Classification Tree imputation performs the best. Among the imputation methods, the Classification Tree consistently performs the best across each metric, followed by Chained Equations Imputation, and then k-NN. Somewhat surprisingly, the Random Forest Imputation performs the worst across all metrics, despite the fact that it is an extension of the Classification Tree method. However, it is possible that a larger forest could yield better results.
+From the figure, we observe that all five datasets perform similarly across most metrics. However, the logistic regression model achieves the best performance on the CCA dataset for every metric. Among the imputation methods, Chained Equations Imputation performs the best, followed closely by k-NN. Random Forest Imputation has a slight edge on the Classification Tree method, with the latter performing the worst across all metrics. It is possible that a larger forest could yield better results and be more comparable to the other imputation methods.
 
-Given that CCA yields the best performance on four of the five metrics, we proceed with the CCA dataset for the prediction portion of the project. Due to the large overall sample size and prior treatment of informative missingness as discussed in **Section II.A**, we believe there is minimal risk of introducing bias in our results by excluding incomplete observations. In total, CCA removes 5,175 observations with missing data from the original 26,707, resulting in a final dataset of 21,532 observations across 37 variables.
+Given that CCA yields the best performance across the five metrics, we proceed with the CCA dataset for the prediction portion of the project. Due to the large overall sample size and prior treatment of informative missingness as discussed in **Section II.A**, we believe there is minimal risk of introducing bias in our results by excluding incomplete observations. In total, CCA removes 5,175 observations with missing data from the original 26,707, resulting in a final dataset of 21,532 observations across 37 variables.
 
 ```{r}
 # use confusion_imputation function to get performance metrics from
@@ -1116,13 +1116,13 @@ rows_w_missing <- sum(rowSums(is.na(flu_full)) > 0)
 
 The primary goal of this project was to predict an individual's seasonal flu vaccination status based on demographic information and health-related characteristics. We used the National 2009 H1N1 Flu Survey data, which contains 26,707 observations across 37 variables. Our analysis began by addressing missing data in the dataset. Notably, over half of all observations (14,913) contained missing values.
 
-We evaluated four imputation techniques to handle this missingness: classification trees, random forests, chained equations, and k-nearest neighbors (k-NN). Each imputed dataset was assessed using a neutral logistic regression model and in-sample prediction. We compared these results to a complete case analysis (CCA) and found that the CCA version performed the best across four of five performance metrics.
+We evaluated four imputation techniques to handle this missingness: classification trees, random forests, chained equations, and k-nearest neighbors (k-NN). Each imputed dataset was assessed using a neutral logistic regression model and in-sample prediction. We compared these results to a complete case analysis (CCA) and found that the CCA version performed the best across all five performance metrics.
 
 Using the CCA dataset, we then applied three statistical learning methods--logistic regression, classification trees, and random forests--to predict vaccination status. Of these techniques, the random forest performed the best, achieving the highest accuracy (78.6%), sensitivity (76.1%), and specificity (81.0%). In practice, we would recommend using the random forest due to its strong predictive performance, flexibility with a variety of data types, and lack of reliance on parametric assumptions. The main drawback of the technique is that, unlike logistic regression or a classification tree, it cannot be easily interpreted in terms of associations between the outcome and the features. However, by using feature importance analysis, we can attempt to identify key predictive variables.
 
 Our feature importance analysis of the random forest indicated that the most important predictors of vaccination were a participant’s perceived risk of illness without the seasonal flu vaccine and their belief in the vaccine’s effectiveness. In contrast, behavioral features like antiviral medication usage and mask purchasing were far less predictive.
 
-Several limitations may affect the validity of our findings. Most notably, due to computational constraints, we restricted the complexity of our imputation techniques. For instance, in the random forest--which performed the worst of any imputation--we capped the number of trees at 100 and limited the number of terminal nodes per tree to 5. Similarly, for the chained equations imputation, we only ran 50 iterations and performed a single imputation. Increased processing power would have allowed us to run more iterations and aggregate multiple imputations. Lastly, we limited k-NN imputation to $k = 5$. With more computing power, we could test higher values of $k$ to achieve the best performance from the imputation.
+Several limitations may affect the validity of our findings. Most notably, due to computational constraints, we restricted the complexity of our imputation techniques. For instance, in the random forest--which only performed slightly better than a single classification tree--we capped the number of trees at 100 and limited the number of terminal nodes per tree to 5. Similarly, for the chained equations imputation, we only ran 50 iterations and performed a single imputation. Increased processing power would have allowed us to run more iterations and aggregate multiple imputations. Lastly, we limited k-NN imputation to $k = 5$. With more computing power, we could test higher values of $k$ to achieve the best performance from the imputation.
 
 We also originally intended to use a k-NN algorithm for prediction but were again limited by computing resources. Future work could incorporate k-NN as well as other computationally expensive prediction techniques.
 
